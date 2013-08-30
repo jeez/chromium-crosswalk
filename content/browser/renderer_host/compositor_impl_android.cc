@@ -27,11 +27,13 @@
 #include "cc/trees/layer_tree_host.h"
 #include "content/browser/gpu/browser_gpu_channel_host_factory.h"
 #include "content/browser/gpu/gpu_surface_tracker.h"
+#include "content/browser/renderer_host/image_transport_factory_android.h"
 #include "content/common/gpu/client/command_buffer_proxy_impl.h"
 #include "content/common/gpu/client/context_provider_command_buffer.h"
 #include "content/common/gpu/client/gl_helper.h"
+#include "content/common/gpu/client/gl_helper_browser.h"
 #include "content/common/gpu/client/gpu_channel_host.h"
-#include "content/common/gpu/client/webgraphicscontext3d_command_buffer_impl.h"
+#include "content/common/gpu/client/webgraphicscontext3d_command_buffer_browser_impl.h"
 #include "content/common/gpu/gpu_process_launch_causes.h"
 #include "content/public/browser/android/compositor_client.h"
 #include "content/public/common/content_switches.h"
@@ -380,7 +382,8 @@ bool CompositorImpl::CopyTextureToBitmap(WebKit::WebGLId texture_id,
   DCHECK(bitmap.size() == sub_rect.size());
   if (bitmap.size() != sub_rect.size() || texture_id == 0) return false;
 
-  GLHelper* helper = ImageTransportFactoryAndroid::GetInstance()->GetGLHelper();
+  GLHelperBrowser* helper =
+      ImageTransportFactoryAndroid::GetInstance()->GetGLHelperBrowser();
   helper->ReadbackTextureSync(texture_id,
                               sub_rect,
                               static_cast<unsigned char*> (bitmap.pixels()));
@@ -454,6 +457,38 @@ scoped_ptr<cc::OutputSurface> CompositorImpl::CreateOutputSurface(
   if (!context_provider.get()) {
     LOG(ERROR) << "Failed to create 3D context for compositor.";
     return scoped_ptr<cc::OutputSurface>();
+  } else {
+    DCHECK(window_ && surface_id_);
+    GpuChannelHostFactory* factory = BrowserGpuChannelHostFactory::instance();
+    GURL url("chrome://gpu/Compositor::createContext3D");
+    scoped_ptr<WebGraphicsContext3DCommandBufferBrowserImpl> context(
+        new WebGraphicsContext3DCommandBufferBrowserImpl(
+            surface_id_,
+            url,
+            factory,
+            weak_factory_.GetWeakPtr()));
+    static const size_t kBytesPerPixel = 4;
+    gfx::DeviceDisplayInfo display_info;
+    size_t full_screen_texture_size_in_bytes =
+        display_info.GetDisplayHeight() *
+        display_info.GetDisplayWidth() *
+        kBytesPerPixel;
+    if (!context->Initialize(
+        attrs,
+        false,
+        CAUSE_FOR_GPU_LAUNCH_WEBGRAPHICSCONTEXT3DCOMMANDBUFFERIMPL_INITIALIZE,
+        64 * 1024,  // command buffer size
+        std::min(full_screen_texture_size_in_bytes,
+        kDefaultStartTransferBufferSize),
+        kDefaultMinTransferBufferSize,
+        std::min(3 * full_screen_texture_size_in_bytes,
+                 kDefaultMaxTransferBufferSize))) {
+      LOG(ERROR) << "Failed to create 3D context for compositor.";
+      return scoped_ptr<cc::OutputSurface>();
+    }
+    return scoped_ptr<cc::OutputSurface>(
+        new OutputSurfaceWithoutParent(
+            context.PassAs<WebKit::WebGraphicsContext3D>()));
   }
 
   return scoped_ptr<cc::OutputSurface>(
